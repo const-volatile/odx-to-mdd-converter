@@ -76,6 +76,7 @@ Options:
   -O, --output-directory=<path>  output directory for files (default: same as pdx-file)
   -L, --lenient                  Continue conversion despite recoverable errors instead of aborting
   --include-job-files            Include job files & libraries referenced in single ecu jobs
+  --resolve-logical-link-comparams  Resolve ODX-V logical-link communication parameters into base variants and functional groups, copying layers when links require different parameter values
   --partial-job-files=<text>...  Include job files partially, and spread the contents as individual chunks. Argument can be repeated, and is in the format: <regex for job-file-name pattern> <regex for content file-name pattern>.
   -V, --version                  Print version information and exit
   --log-level=(info|debug|trace) Sets the log level for the .mdd.log files
@@ -89,6 +90,19 @@ Options:
 Arguments:
   <pdx-files>  pdx files to convert
 ```
+
+To include communication settings supplied by ODX-V logical links:
+
+```shell
+java -jar converter/build/libs/converter-all.jar convert --resolve-logical-link-comparams ECU.pdx
+```
+
+This opt-in conversion processes links that directly reference a BV or FG across all VEHICLE-INFORMATION
+entries in the PDX; it does not select a vehicle model.
+It resolves inherited communication parameters, applies the target BV/FG's own values, then applies physical-link
+and logical-link overrides, in that order. The first distinct effective parameter set keeps the original BV/FG
+identity. Additional sets create copies named `<original-short-name>__<logical-link-short-name>`, with suffixes
+to avoid collisions. Links with the same effective settings share a BV/FG. No MDD schema changes are required.
 
 ##### `sign`
 
@@ -188,6 +202,13 @@ cause issues when it isn't updated in the CDA as well.
 - Data types (e.g., END-OF-PDU, LEADING-LENGTH-FIELD, STRUCTURE, MUX, DTC, etc.) are combined into a single message with 
   a type and fields for the different data types, and composition is used instead of inheritance.
 - No support for cross-file references outside the pdx and runtime resolution
+- ODX-V logical links and their communication parameter overrides are ignored by default. Enable
+  `--resolve-logical-link-comparams` to flatten these settings into BV/FG communication parameter references.
+  Conflicting settings produce additional BV/FG records in the same MDD. Existing ECU-variant and other
+  diagnostic-layer parent references retain their original lineage; copies do not create corresponding variant
+  families or update functional-group membership. This conversion does not add logical-link selection to CDA
+  or produce a separate MDD for each link, and does not preserve the ODX-V topology.
+  ECU-proxy indirection and gateway-logical-link chains are not resolved by this initial implementation.
 
 ### Language 💻
 

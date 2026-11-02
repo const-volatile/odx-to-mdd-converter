@@ -26,6 +26,7 @@ data class ConverterOptions(
     // from JSON (de)serialization entirely, while still keeping it available in-memory for plugins.
     @Transient
     val pluginOptions: Map<String, String> = emptyMap(),
+    val resolveLogicalLinkComparams: Boolean = false,
 )
 
 @Serializable

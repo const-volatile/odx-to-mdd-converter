@@ -17,6 +17,7 @@ import schema.odx.COMPARAMREF
 import schema.odx.DIAGCOMM
 import schema.odx.ECUVARIANT
 import schema.odx.FIELD
+import schema.odx.LINKCOMPARAMREF
 import schema.odx.MATCHINGBASEVARIANTPARAMETER
 import schema.odx.MATCHINGPARAMETER
 import schema.odx.ODXLINK
@@ -47,6 +48,7 @@ class ODXLinkCollector : Unmarshaller.Listener() {
             is ODXLINK,
             is PARENTREF,
             is COMPARAMREF,
+            is LINKCOMPARAMREF,
             is PRECONDITIONSTATEREF,
             is STATETRANSITIONREF,
             // SNREF-containing types (for short-name-based resolution)

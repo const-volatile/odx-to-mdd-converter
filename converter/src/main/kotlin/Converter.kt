@@ -156,13 +156,21 @@ class FileConverter(
 
             val odxRawSize = inputFileData.filter { it.key.contains(".odx") }.map { it.value.size }.sum()
 
-            val odxCollection: ODXCollectionGroup
+            var odxCollection: ODXCollectionGroup
             val indexingDuration =
                 measureTime {
                     odxCollection =
                         ODXCollectionGroup(odxData, odxRawSize, options, logger, linkCollector.linkToFile)
                 }
             logger.fine("Building ODX collection index took $indexingDuration")
+
+            if (options.resolveLogicalLinkComparams) {
+                val resolutionDuration =
+                    measureTime {
+                        odxCollection = odxCollection.resolveLogicalLinkComparams()
+                    }
+                logger.fine("Resolving logical-link communication parameters took $resolutionDuration")
+            }
 
             if (options.withAudiences.isNotEmpty()) {
                 val validAudiences = odxCollection.additionalAudiences.map { it.shortname }
@@ -409,6 +417,12 @@ class ConvertCommand : CliktCommand(name = "convert") {
         .help("Include job files & libraries referenced in single ecu jobs")
         .flag(default = false)
 
+    val resolveLogicalLinkComparams: Boolean by option("--resolve-logical-link-comparams")
+        .help(
+            "Resolve ODX-V logical-link communication parameters into base variants and functional groups, " +
+                "copying layers when links require different parameter values",
+        ).flag(default = false)
+
     val partialJobFiles: List<Pair<String, String>> by option("--partial-job-files")
         .help(
             "Include job files partially, and spread the contents as individual chunks. " +
@@ -530,6 +544,7 @@ class ConvertCommand : CliktCommand(name = "convert") {
                                             withAudiences = withAudiences,
                                             skipSigning = this.skipSigning,
                                             pluginOptions = this.pluginOptions,
+                                            resolveLogicalLinkComparams = this.resolveLogicalLinkComparams,
                                         )
                                     val converter = FileConverter(logger, context)
                                     converter.convert(inputFile, outFile, options, stats)

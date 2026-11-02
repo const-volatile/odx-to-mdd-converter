@@ -26,6 +26,7 @@ class ConverterOptionsTest {
         val options = ConverterOptions()
         assertThat(options.lenient).isFalse()
         assertThat(options.includeJobFiles).isFalse()
+        assertThat(options.resolveLogicalLinkComparams).isFalse()
         assertThat(options.partialJobFiles).isEmpty()
         assertThat(options.withAudiences).isEmpty()
         assertThat(options.pluginOptions).isEmpty()
@@ -51,6 +52,7 @@ class ConverterOptionsTest {
                     ),
                 withAudiences = listOf("AfterSales", "Development"),
                 pluginOptions = mapOf("compression.compress" to "false"),
+                resolveLogicalLinkComparams = true,
             )
         val json = Json.encodeToString(options)
         val decoded = Json.decodeFromString<ConverterOptions>(json)

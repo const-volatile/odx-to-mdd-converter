@@ -206,6 +206,9 @@ class ODXCollectionGroup(
 
     fun resolveProtocolByShortName(shortName: String): PROTOCOL? = protocols.firstOrNull { it.shortname == shortName }
 
+    /** Materialize ODX-V link settings without modifying the parsed source documents. */
+    fun resolveLogicalLinkComparams(): ODXCollectionGroup = LogicalLinkComparamResolver(this, logger, linkOwnership).resolve()
+
     fun resolveProtStackByShortName(shortName: String): PROTSTACK? = protStacks.firstOrNull { it.shortname == shortName }
 
     // ODXLINK resolution methods
@@ -240,6 +243,12 @@ class ODXCollectionGroup(
     }
 
     fun resolveRequest(link: ODXLINK): REQUEST? = resolveScoped(link, link.idref, link.docref) { it.requests }
+
+    fun resolveBaseVariant(link: ODXLINK): BASEVARIANT? = resolveScoped(link, link.idref, link.docref) { it.basevariants }
+
+    fun resolveFunctionalGroup(link: ODXLINK): FUNCTIONALGROUP? = resolveScoped(link, link.idref, link.docref) { it.functionalGroups }
+
+    fun resolveProtocol(link: ODXLINK): PROTOCOL? = resolveScoped(link, link.idref, link.docref) { it.protocols }
 
     fun resolvePosResponse(link: ODXLINK): POSRESPONSE? = resolveScoped(link, link.idref, link.docref) { it.posResponses }
 
