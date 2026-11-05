@@ -58,6 +58,7 @@ tasks.register<Exec>("generateFbs") {
             "-o",
             "${projectDir.absolutePath}/src/main/kotlin",
             "${projectDir.absolutePath}/src/main/fbs/diagnostic_description.fbs",
+            "${projectDir.absolutePath}/src/main/fbs/vehicle_data.fbs",
         )
     logger.info("Executing ${cmd.joinToString(" ")}")
     commandLine(cmd)

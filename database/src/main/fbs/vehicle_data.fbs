@@ -1,0 +1,78 @@
+/*
+ * Copyright (c) 2026 The Contributors to Eclipse OpenSOVD (see CONTRIBUTORS)
+ *
+ * See the NOTICE file(s) distributed with this work for additional
+ * information regarding copyright ownership.
+ *
+ * This program and the accompanying materials are made available under the
+ * terms of the Apache License Version 2.0 which is available at
+ * https://www.apache.org/licenses/LICENSE-2.0
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+namespace dataformat.vehicle;
+
+enum DiagnosticLayerKind: byte {
+    BASE_VARIANT = 0,
+    FUNCTIONAL_GROUP = 1
+}
+
+table DiagnosticLayerRef {
+    // Matches ecu_name in the target MDD and its EcuData root.
+    database_id: string;
+    kind: DiagnosticLayerKind;
+    short_name: string;
+}
+
+table LogicalLinkRef {
+    // Logical link IDs are scoped to their VEHICLE-INFO-SPEC.
+    source_short_name: string;
+    id: string;
+}
+
+table ParameterValue {
+    // Complex members can carry their names. Unnamed nodes can group table rows.
+    short_name: string;
+    // A value uses either simple_value or complex_values.
+    simple_value: string;
+    complex_values: [ParameterValue];
+}
+
+table CommunicationParameter {
+    short_name: string;
+    definition_document: string;
+    definition_id: string;
+    // Absent when the reference and definition both leave the value unset.
+    value: ParameterValue;
+}
+
+table LogicalLink {
+    id: string;
+    short_name: string;
+    targets: [DiagnosticLayerRef];
+    protocol: string;
+    protocol_stack: string;
+    physical_link_id: string;
+    physical_link_type: string;
+    gateway_links: [LogicalLinkRef];
+    com_params: [CommunicationParameter];
+    physical_link_source_short_name: string;
+    is_gateway: bool = false;
+    gateway_semantic: string;
+}
+
+table VehicleInformation {
+    // SHORT-NAME of the containing VEHICLE-INFO-SPEC.
+    source_short_name: string;
+    short_name: string;
+    logical_links: [LogicalLink];
+}
+
+table VehicleData {
+    version: string;
+    vehicle_informations: [VehicleInformation];
+}
+
+root_type VehicleData;
+file_identifier "VHCL";

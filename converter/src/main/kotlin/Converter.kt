@@ -43,6 +43,9 @@ import schema.odx.ODX
 import java.io.BufferedOutputStream
 import java.io.File
 import java.io.InputStream
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.time.Instant
 import java.util.ServiceLoader
 import java.util.concurrent.Executors
@@ -314,6 +317,50 @@ class FileConverter(
         }
     }
 
+    /** Writes one vehicle companion from the PDX set used to produce the diagnostic databases. */
+    fun writeVehicleData(
+        inputFiles: List<File>,
+        outputFile: File,
+    ) {
+        require(inputFiles.isNotEmpty()) { "At least one PDX file is required" }
+        require(outputFile.extension.equals("vehicle-data", ignoreCase = true)) {
+            "The vehicle companion filename must end in .vehicle-data"
+        }
+        require(inputFiles.none { it.canonicalFile == outputFile.canonicalFile }) {
+            "The vehicle companion must have a different path from the input files"
+        }
+
+        val sources =
+            inputFiles.map { inputFile ->
+                val documents = mutableMapOf<String, ODX>()
+                val collector = ODXLinkCollector()
+                ZipFile(inputFile).use { zipFile ->
+                    fillInputFileData(zipFile, documents, mutableMapOf(), collector)
+                }
+                VehicleDataSource(
+                    inputFile.path,
+                    ODXCollectionGroup(documents, 0, ConverterOptions(), logger, collector.linkToFile),
+                )
+            }
+        val vehicles = resolveVehicleInformation(sources)
+        require(vehicles.isNotEmpty()) { "No VEHICLE-INFORMATION entries found in the input PDX files" }
+
+        val bytes = VehicleDataWriter().write(vehicles)
+        val destination = outputFile.toPath().toAbsolutePath().normalize()
+        val temporary = Files.createTempFile(destination.parent, ".vehicle-data-", ".tmp")
+        try {
+            Files.write(temporary, bytes)
+            try {
+                Files.move(temporary, destination, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+            } catch (_: AtomicMoveNotSupportedException) {
+                Files.move(temporary, destination, StandardCopyOption.REPLACE_EXISTING)
+            }
+        } finally {
+            Files.deleteIfExists(temporary)
+        }
+        logger.info("Wrote ${vehicles.size} vehicle information entries to '$outputFile'")
+    }
+
     @OptIn(ExperimentalAtomicApi::class)
     private fun fillInputFileData(
         zipFile: ZipFile,
@@ -566,22 +613,21 @@ class ConvertCommand : CliktCommand(name = "convert") {
 }
 
 /**
- * Root command for the `odx-converter` binary. Supports subcommands `convert` (default), `sign`,
- * `verify` and `view`. If the first argument is not a known subcommand name, `convert` is implied,
+ * Root command for the `odx-converter` binary. If the first argument is not a known subcommand name, `convert` is implied,
  * to stay backward compatible with the previous single-command CLI.
  */
 class OdxConverterCli : CliktCommand(name = "odx-converter") {
     override fun run() = Unit
 
     override fun help(context: Context): String =
-        "Converts ODX/PDX diagnostic descriptions into the .mdd format, and provides tooling to sign, " +
-            "verify and inspect .mdd files.\n\n" +
+        "Converts ODX/PDX diagnostic descriptions into the .mdd format, exports vehicle companions, " +
+            "and provides tooling to sign, verify and inspect .mdd files.\n\n" +
             "If the first argument is not one of the subcommand names above, 'convert' is implied, " +
             "so 'odx-converter file.pdx' is equivalent to 'odx-converter convert file.pdx'. " +
             "Run 'odx-converter <subcommand> --help' for details on a specific subcommand."
 
     companion object {
-        val KNOWN_SUBCOMMANDS = setOf("convert", "sign", "verify", "view")
+        val KNOWN_SUBCOMMANDS = setOf("convert", "vehicle-data", "sign", "verify", "view")
     }
 }
 
@@ -589,6 +635,7 @@ fun main(args: Array<String>) {
     val cli =
         OdxConverterCli().subcommands(
             ConvertCommand(),
+            VehicleDataCommand(),
             SignCommand(),
             VerifyCommand(),
             ViewCommand(),
