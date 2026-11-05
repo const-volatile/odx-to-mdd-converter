@@ -47,7 +47,9 @@ import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.time.Instant
+import java.util.Collections
 import java.util.ServiceLoader
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.logging.Level
@@ -142,7 +144,19 @@ class FileConverter(
         options: ConverterOptions,
         stats: MutableList<ChunkStat>,
     ) {
-        logger.info("Converting '${inputFile.name}' to mdd")
+        val source = convertDiagnostic(inputFile, outputFile, options, stats)
+        if (source.hasVehicleInformation) {
+            writeVehicleCompanions(mapOf(inputFile to outputFile), mapOf(inputFile to source))
+        }
+    }
+
+    internal fun convertDiagnostic(
+        inputFile: File,
+        outputFile: File,
+        options: ConverterOptions,
+        stats: MutableList<ChunkStat>,
+    ): VehicleDataSource {
+        logger.info("Converting '${inputFile.name}'")
 
         val odxData = mutableMapOf<String, ODX>()
 
@@ -166,6 +180,10 @@ class FileConverter(
                         ODXCollectionGroup(odxData, odxRawSize, options, logger, linkCollector.linkToFile)
                 }
             logger.fine("Building ODX collection index took $indexingDuration")
+            val source = VehicleDataSource(inputFile.path, odxCollection)
+            if (source.hasVehicleInformation && odxCollection.basevariants.isEmpty() && odxCollection.functionalGroups.isEmpty()) {
+                return source
+            }
 
             if (options.withAudiences.isNotEmpty()) {
                 val validAudiences = odxCollection.additionalAudiences.map { it.shortname }
@@ -314,37 +332,53 @@ class FileConverter(
             logger.info(
                 "Writing database took $writingDuration total (compression: $compressionDuration) - sizes: odx raw: ${odxRawSize.format()} bytes, uncompressed chunks: ${sizeUncompressed.format()} bytes, compressed mdd: ${sizeCompressed.format()} bytes",
             )
+            return source
         }
     }
 
-    /** Writes one vehicle companion from the PDX set used to produce the diagnostic databases. */
-    fun writeVehicleData(
-        inputFiles: List<File>,
-        outputFile: File,
+    internal fun writeVehicleCompanions(
+        diagnosticOutputs: Map<File, File>,
+        vehicleSources: Map<File, VehicleDataSource>,
     ) {
-        require(inputFiles.isNotEmpty()) { "At least one PDX file is required" }
-        require(outputFile.extension.equals("vehicle-data", ignoreCase = true)) {
-            "The vehicle companion filename must end in .vehicle-data"
-        }
-        require(inputFiles.none { it.canonicalFile == outputFile.canonicalFile }) {
-            "The vehicle companion must have a different path from the input files"
-        }
+        if (vehicleSources.isEmpty()) return
 
-        val sources =
-            inputFiles.map { inputFile ->
-                val documents = mutableMapOf<String, ODX>()
-                val collector = ODXLinkCollector()
-                ZipFile(inputFile).use { zipFile ->
-                    fillInputFileData(zipFile, documents, mutableMapOf(), collector)
+        // Keep parsed VIS archives. Load other archives here only when a companion needs the batch's reference scope.
+        val sources = diagnosticOutputs.keys.associateWith { vehicleSources[it] ?: readVehicleDataSource(it) }
+        val vehicleData = resolveVehicleInformation(sources.values.toList())
+        val protectedPaths = (diagnosticOutputs.keys + diagnosticOutputs.values).map { it.canonicalFile }.toSet()
+        val companionPaths = mutableSetOf<File>()
+        val companions =
+            diagnosticOutputs.mapNotNull { (inputFile, diagnosticOutput) ->
+                val source = vehicleSources[inputFile] ?: return@mapNotNull null
+                val outputFile = File(diagnosticOutput.parentFile, "${diagnosticOutput.nameWithoutExtension}.vehicle-data")
+                val path = outputFile.canonicalFile
+                require(path !in protectedPaths) {
+                    "Vehicle companion '$outputFile' conflicts with a PDX input or MDD output"
                 }
-                VehicleDataSource(
-                    inputFile.path,
-                    ODXCollectionGroup(documents, 0, ConverterOptions(), logger, collector.linkToFile),
-                )
+                require(companionPaths.add(path)) { "Multiple PDX inputs map to vehicle companion '$outputFile'" }
+                outputFile to vehicleData.getValue(source)
             }
-        val vehicles = resolveVehicleInformation(sources)
-        require(vehicles.isNotEmpty()) { "No VEHICLE-INFORMATION entries found in the input PDX files" }
+        for ((outputFile, vehicles) in companions) {
+            writeVehicleCompanion(outputFile, vehicles)
+        }
+    }
 
+    private fun readVehicleDataSource(inputFile: File): VehicleDataSource {
+        val documents = mutableMapOf<String, ODX>()
+        val collector = ODXLinkCollector()
+        ZipFile(inputFile).use { zipFile ->
+            fillInputFileData(zipFile, documents, mutableMapOf(), collector)
+        }
+        return VehicleDataSource(
+            inputFile.path,
+            ODXCollectionGroup(documents, 0, ConverterOptions(), logger, collector.linkToFile),
+        )
+    }
+
+    private fun writeVehicleCompanion(
+        outputFile: File,
+        vehicles: List<VehicleInformationData>,
+    ) {
         val bytes = VehicleDataWriter().write(vehicles)
         val destination = outputFile.toPath().toAbsolutePath().normalize()
         val temporary = Files.createTempFile(destination.parent, ".vehicle-data-", ".tmp")
@@ -436,7 +470,8 @@ class FileConverter(
 
 class ConvertCommand : CliktCommand(name = "convert") {
     override fun help(context: Context): String =
-        "Converts one or more .pdx files into the .mdd file format. By default, every input .mdd file is " +
+        "Converts one or more .pdx files to .mdd and exports a .vehicle-data companion for each PDX with vehicle information. " +
+            "By default, every output .mdd file is " +
             "also automatically signed using any signing plugins found on the classpath (see --skip-signing)."
 
     val pdxFiles: List<File> by argument(name = "pdx-files")
@@ -508,6 +543,7 @@ class ConvertCommand : CliktCommand(name = "convert") {
                 "Example: --plugin-option compression.compress=false",
         ).associate()
 
+    @Volatile
     private var hadErrors: Boolean = false
     private val context: JAXBContext =
         org.eclipse.persistence.jaxb.JAXBContextFactory
@@ -530,12 +566,17 @@ class ConvertCommand : CliktCommand(name = "convert") {
             println("Commit: " + ManifestReader.commitHash)
             exitProcess(0)
         }
-        val stats = mutableListOf<ChunkStat>()
+        val stats = Collections.synchronizedList(mutableListOf<ChunkStat>())
         if (parallel <= 0) {
             System.err.println("Invalid parallel value: $parallel, must be greater than 0")
             exitProcess(-1)
         }
         val executors = Executors.newFixedThreadPool(parallel)
+        val diagnosticOutputs =
+            pdxFiles.associateWith { inputFile ->
+                File(outputDir ?: inputFile.parentFile, "${inputFile.nameWithoutExtension}.mdd")
+            }
+        val vehicleSources = ConcurrentHashMap<File, VehicleDataSource>()
         // sort by descending file size as a rough guesstimate of processing time
         pdxFiles.forEach { inputFile ->
             val outputDir = outputDir ?: inputFile.parentFile
@@ -562,7 +603,7 @@ class ConvertCommand : CliktCommand(name = "convert") {
                                     logger.addHandler(it)
                                 }
                                 try {
-                                    val outFile = File(outputDir, "${inputFile.nameWithoutExtension}.mdd")
+                                    val outFile = diagnosticOutputs.getValue(inputFile)
                                     val options =
                                         ConverterOptions(
                                             lenient = this.lenient,
@@ -579,7 +620,10 @@ class ConvertCommand : CliktCommand(name = "convert") {
                                             pluginOptions = this.pluginOptions,
                                         )
                                     val converter = FileConverter(logger, context)
-                                    converter.convert(inputFile, outFile, options, stats)
+                                    val source = converter.convertDiagnostic(inputFile, outFile, options, stats)
+                                    if (source.hasVehicleInformation) {
+                                        vehicleSources[inputFile] = source
+                                    }
                                 } catch (e: Exception) {
                                     hadErrors = true
                                     logger.severe("Error while converting file ${inputFile.name}: ${e.message}", e)
@@ -593,13 +637,24 @@ class ConvertCommand : CliktCommand(name = "convert") {
                         }
                     println("Finished processing ${inputFile.name} after $duration")
                 } catch (t: Throwable) {
+                    hadErrors = true
                     t.printStackTrace()
                 }
             }
         }
         executors.shutdown()
-        executors.awaitTermination(1, TimeUnit.HOURS)
+        if (!executors.awaitTermination(1, TimeUnit.HOURS)) {
+            executors.shutdownNow()
+            System.err.println("PDX conversion did not finish within one hour")
+            exitProcess(1)
+        }
         if (hadErrors) {
+            exitProcess(1)
+        }
+        try {
+            FileConverter(Logger.getLogger("vehicle-data"), context).writeVehicleCompanions(diagnosticOutputs, vehicleSources)
+        } catch (e: Exception) {
+            System.err.println("Error while exporting vehicle data: ${e.message}")
             exitProcess(1)
         }
         val diagDescriptions = stats.filter { it.chunkType == Chunk.DataType.DIAGNOSTIC_DESCRIPTION }
@@ -627,7 +682,7 @@ class OdxConverterCli : CliktCommand(name = "odx-converter") {
             "Run 'odx-converter <subcommand> --help' for details on a specific subcommand."
 
     companion object {
-        val KNOWN_SUBCOMMANDS = setOf("convert", "vehicle-data", "sign", "verify", "view")
+        val KNOWN_SUBCOMMANDS = setOf("convert", "sign", "verify", "view")
     }
 }
 
@@ -635,7 +690,6 @@ fun main(args: Array<String>) {
     val cli =
         OdxConverterCli().subcommands(
             ConvertCommand(),
-            VehicleDataCommand(),
             SignCommand(),
             VerifyCommand(),
             ViewCommand(),

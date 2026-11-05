@@ -28,8 +28,8 @@ Compression sizes vary, but here are some typical values:
 
 #### After building from source
 
-The CLI is built around a root `odx-converter` command with subcommands `convert`, `vehicle-data`,
-`sign`, `verify`, and `view`. For backward compatibility, if the first argument isn't one of these
+The CLI is built around a root `odx-converter` command with subcommands `convert`, `sign`, `verify`,
+and `view`. For backward compatibility, if the first argument isn't one of these
 subcommand names, `convert` is implied — so `converter-all.jar file.pdx` is equivalent to
 `converter-all.jar convert file.pdx`.
 
@@ -52,10 +52,7 @@ Options:
   -h, --help  Show this message and exit
 
 Commands:
-  convert  Converts one or more .pdx files into the .mdd file format. By default, every input .mdd
-           file is also automatically signed using any signing plugins found on the classpath (see
-           --skip-signing).
-  vehicle-data  Writes vehicle information and logical links from a PDX set to a VehicleData FlatBuffer companion.
+  convert  Converts PDX files into diagnostic MDDs and vehicle data companions.
   sign     Signs each chunk and/or the whole file of the given .mdd files, in-place.
   verify   Verifies signatures in .mdd files using OEM/vendor-provided verification plugins. If any
            signature is invalid, the command exits with a non-zero exit code.
@@ -91,16 +88,21 @@ Arguments:
   <pdx-files>  pdx files to convert
 ```
 
-##### `vehicle-data`
+###### Vehicle data companion
 
-Convert each diagnostic PDX with `convert`, then pass the same PDXs and the archive containing ODX-V
-to `vehicle-data`. The ODX-V documents can also be in one of the diagnostic PDXs.
+Pass the diagnostic PDXs and any separate PDX containing ODX-V to the same `convert` invocation.
+The converter resolves vehicle logical-link targets across that input set.
 
 ```shell
-java -jar converter/build/libs/converter-all.jar convert ECU_A.pdx ECU_B.pdx FunctionalGroups.pdx
-java -jar converter/build/libs/converter-all.jar vehicle-data --output Car.vehicle-data \
+java -jar converter/build/libs/converter-all.jar convert \
   Vehicle.pdx ECU_A.pdx ECU_B.pdx FunctionalGroups.pdx
 ```
+
+For each PDX containing `VEHICLE-INFORMATION`, `convert` automatically writes a companion named
+`<input-stem>.vehicle-data`. An archive containing both vehicle and diagnostic data produces both
+files. A vehicle-only archive produces its companion, and a diagnostic-only archive produces its
+MDD. Both output types use `--output-directory` when supplied and otherwise go next to their
+source PDX.
 
 The companion is a raw [`VehicleData` FlatBuffer](database/src/main/fbs/vehicle_data.fbs) with the
 `VHCL` file identifier. It contains each vehicle information entry and its logical links. A link
@@ -211,8 +213,8 @@ cause issues when it isn't updated in the CDA as well.
 
 - Data types (e.g., END-OF-PDU, LEADING-LENGTH-FIELD, STRUCTURE, MUX, DTC, etc.) are combined into a single message with 
   a type and fields for the different data types, and composition is used instead of inheritance.
-- `convert` resolves diagnostic references within each PDX. `vehicle-data` can resolve logical-link
-  targets across the supplied PDX set.
+- `convert` resolves diagnostic references within each PDX and vehicle logical-link targets across
+  the supplied PDX set.
 - The vehicle companion preserves vehicle information names, logical links and their effective communication
   parameters. Its scope excludes connector pin mappings, ECU groups and ECU-proxy matching conditions.
 

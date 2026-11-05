@@ -38,7 +38,16 @@ import java.util.IdentityHashMap
 internal data class VehicleDataSource(
     val name: String,
     val odx: ODXCollectionGroup,
-)
+) {
+    val hasVehicleInformation: Boolean
+        get() =
+            odx.data.values.any {
+                it.vehicleinfospec
+                    ?.vehicleinformations
+                    ?.vehicleinformation
+                    ?.isNotEmpty() == true
+            }
+}
 
 internal data class VehicleInformationData(
     val sourceShortName: String,
@@ -90,7 +99,7 @@ internal data class VehicleParamValue(
     val complexValues: List<VehicleParamValue>?,
 )
 
-internal fun resolveVehicleInformation(sources: List<VehicleDataSource>): List<VehicleInformationData> =
+internal fun resolveVehicleInformation(sources: List<VehicleDataSource>): Map<VehicleDataSource, List<VehicleInformationData>> =
     VehicleDataResolver(sources).resolve()
 
 private class VehicleDataResolver(
@@ -154,33 +163,37 @@ private class VehicleDataResolver(
             .groupBy { it.odx.ecuName }
     }
 
-    fun resolve(): List<VehicleInformationData> {
+    fun resolve(): Map<VehicleDataSource, List<VehicleInformationData>> {
         val vehicleDocuments = documents.filter { it.vehicles.isNotEmpty() }
         vehicleDocuments.groupBy { it.name }.forEach { (name, group) ->
             if (group.size > 1) {
                 throw OdxResolutionException("Ambiguous VEHICLE-INFO-SPEC '$name' in ${group.joinToString()}")
             }
         }
-        return vehicleDocuments.flatMap { document ->
-            val duplicateIds =
-                document.vehicles
-                    .flatMap { it.logicallinks?.logicallink.orEmpty() }
-                    .groupingBy { it.id }
-                    .eachCount()
-                    .filterValues { it > 1 }
-            if (duplicateIds.isNotEmpty()) {
-                throw OdxResolutionException("Duplicate LOGICAL-LINK IDs in $document: ${duplicateIds.keys.joinToString()}")
-            }
-            document.vehicles.map { vehicle ->
-                VehicleInformationData(
-                    document.name,
-                    vehicle.shortname,
-                    vehicle.logicallinks
-                        ?.logicallink
-                        .orEmpty()
-                        .map { link -> LinkResolver(document, vehicle, link).resolve() },
-                )
-            }
+        return vehicleDocuments.groupBy { it.source }.mapValues { (_, documents) ->
+            documents.flatMap(::resolveDocument)
+        }
+    }
+
+    private fun resolveDocument(document: Document): List<VehicleInformationData> {
+        val duplicateIds =
+            document.vehicles
+                .flatMap { it.logicallinks?.logicallink.orEmpty() }
+                .groupingBy { it.id }
+                .eachCount()
+                .filterValues { it > 1 }
+        if (duplicateIds.isNotEmpty()) {
+            throw OdxResolutionException("Duplicate LOGICAL-LINK IDs in $document: ${duplicateIds.keys.joinToString()}")
+        }
+        return document.vehicles.map { vehicle ->
+            VehicleInformationData(
+                document.name,
+                vehicle.shortname,
+                vehicle.logicallinks
+                    ?.logicallink
+                    .orEmpty()
+                    .map { link -> LinkResolver(document, vehicle, link).resolve() },
+            )
         }
     }
 

@@ -11,6 +11,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import com.github.ajalt.clikt.core.subcommands
+import com.github.ajalt.clikt.testing.test
 import dataformat.vehicle.DiagnosticLayerKind
 import dataformat.vehicle.LogicalLink
 import dataformat.vehicle.VehicleData
@@ -39,21 +41,31 @@ class VehicleDataIntegrationTest {
         )
 
     @Test
-    fun `companion preserves independent links to existing ECU and functional group MDDs`() {
+    fun `convert exports companion links to ECU and functional group MDDs across the PDX set`() {
         withTestDirectory { directory ->
             val (ecuPdx, groupsPdx) = packDiagnosticPdxFiles(directory)
             val visPdx = File(directory, "vehicle.pdx")
             packPdxFiles(visPdx, mapOf("vehicle.odx-v" to vehicleDocument()))
-            val ecuMdd = File(directory, "ecu.mdd")
-            val groupsMdd = File(directory, "groups.mdd")
             val options = ConverterOptions(skipSigning = true)
-            converter.convert(ecuPdx, ecuMdd, options, mutableListOf())
-            converter.convert(groupsPdx, groupsMdd, options, mutableListOf())
-            val originalEcuMdd = ecuMdd.readBytes()
-            val originalGroupsMdd = groupsMdd.readBytes()
+            val baselineEcu = File(directory, "ecu.mdd")
+            val baselineGroups = File(directory, "groups.mdd")
+            converter.convert(ecuPdx, baselineEcu, options, mutableListOf())
+            converter.convert(groupsPdx, baselineGroups, options, mutableListOf())
+            assertFalse(File(directory, "ecu.vehicle-data").exists())
+            assertFalse(File(directory, "groups.vehicle-data").exists())
 
-            val companion = File(directory, "vehicle.vehicle-data")
-            converter.writeVehicleData(listOf(visPdx, ecuPdx, groupsPdx), companion)
+            val output = File(directory, "output").apply { mkdir() }
+            val result =
+                OdxConverterCli().subcommands(ConvertCommand()).test(
+                    listOf("convert", "--skip-signing", "--output-directory", output.path, visPdx.path, ecuPdx.path, groupsPdx.path),
+                )
+            assertEquals(0, result.statusCode, result.output)
+            assertFalse(File(output, "vehicle.mdd").exists())
+            assertFalse(File(output, "ecu.vehicle-data").exists())
+            assertFalse(File(output, "groups.vehicle-data").exists())
+            val companion = File(output, "vehicle.vehicle-data")
+            val ecuMdd = File(output, "ecu.mdd")
+            val groupsMdd = File(output, "groups.mdd")
 
             val buffer = ByteBuffer.wrap(companion.readBytes())
             assertTrue(VehicleData.VehicleDataBufferHasIdentifier(buffer))
@@ -88,8 +100,8 @@ class VehicleDataIntegrationTest {
             assertEquals("VehicleSpec", gatewayRef.sourceShortName)
             assertEquals(gateway.id, gatewayRef.id)
 
-            assertContentEquals(originalEcuMdd, ecuMdd.readBytes())
-            assertContentEquals(originalGroupsMdd, groupsMdd.readBytes())
+            assertEquals(readMddFile(baselineEcu).chunksList, readMddFile(ecuMdd).chunksList)
+            assertEquals(readMddFile(baselineGroups).chunksList, readMddFile(groupsMdd).chunksList)
             val ecu = readMddEcuData(ecuMdd)
             val base =
                 (0 until ecu.variantsLength)
@@ -129,20 +141,23 @@ class VehicleDataIntegrationTest {
     }
 
     @Test
-    fun `unresolved link preserves an existing companion`() {
+    fun `single PDX conversion writes its companion and preserves it on unresolved links`() {
         withTestDirectory { directory ->
-            val (ecuPdx, groupsPdx) = packDiagnosticPdxFiles(directory)
-            val visPdx = File(directory, "vehicle.pdx")
-            val companion = File(directory, "vehicle.vehicle-data")
-            val inputs = listOf(visPdx, ecuPdx, groupsPdx)
-            packPdxFiles(visPdx, mapOf("vehicle.odx-v" to vehicleDocument()))
-            converter.writeVehicleData(inputs, companion)
+            val input = File(directory, "vehicle.pdx")
+            val output = File(directory, "converted.mdd")
+            val companion = File(directory, "converted.vehicle-data")
+            val diagnostics = diagnosticFixtures()
+            val options = ConverterOptions(skipSigning = true)
+            packPdxFiles(input, diagnostics + ("vehicle.odx-v" to vehicleDocument()))
+            converter.convert(input, output, options, mutableListOf())
+            assertEquals("SynthECU", readMddEcuData(output).ecuName)
             val original = companion.readBytes()
+            assertTrue(VehicleData.VehicleDataBufferHasIdentifier(ByteBuffer.wrap(original)))
 
             val broken = vehicleDocument(baseId = "missing_variant")
-            packPdxFiles(visPdx, mapOf("vehicle.odx-v" to broken))
+            packPdxFiles(input, diagnostics + ("vehicle.odx-v" to broken))
 
-            val error = assertFailsWith<OdxResolutionException> { converter.writeVehicleData(inputs, companion) }
+            val error = assertFailsWith<OdxResolutionException> { converter.convert(input, output, options, mutableListOf()) }
             assertTrue(error.message.orEmpty().contains("missing_variant"))
             assertContentEquals(original, companion.readBytes())
         }
@@ -162,6 +177,18 @@ class VehicleDataIntegrationTest {
         .single { it.shortName == shortName }
 
     private fun packDiagnosticPdxFiles(directory: File): Pair<File, File> {
+        val fixtures = diagnosticFixtures()
+        val ecu = File(directory, "ecu.pdx")
+        val groups = File(directory, "groups.pdx")
+        val groupFile = "functional-group.odx-d"
+        packPdxFiles(ecu, fixtures - groupFile)
+        // The shared FG archive is independently convertible, with only the group definition.
+        val shared = fixtures.getValue(groupFile).replace(Regex("<PARENT-REFS>.*?</PARENT-REFS>", RegexOption.DOT_MATCHES_ALL), "")
+        packPdxFiles(groups, mapOf(groupFile to shared))
+        return ecu to groups
+    }
+
+    private fun diagnosticFixtures(): Map<String, String> {
         val fixtureDirectory = File(javaClass.getResource("/synthetic-odx")!!.toURI())
         val fixtures =
             fixtureDirectory
@@ -169,16 +196,9 @@ class VehicleDataIntegrationTest {
                 .filter { it.isFile }
                 .sortedBy { it.name }
                 .associate { it.name to it.readText() }
-        val ecu = File(directory, "ecu.pdx")
-        val groups = File(directory, "groups.pdx")
-        val groupFile = "functional-group.odx-d"
         val comParamFile = "comparam-subset.odx-cs"
         val comParams = fixtures.getValue(comParamFile).replace("<PHYSICAL-DEFAULT-VALUE>500000</PHYSICAL-DEFAULT-VALUE>", "")
-        packPdxFiles(ecu, (fixtures - groupFile) + (comParamFile to comParams))
-        // The shared FG archive is independently convertible, with only the group definition.
-        val shared = fixtures.getValue(groupFile).replace(Regex("<PARENT-REFS>.*?</PARENT-REFS>", RegexOption.DOT_MATCHES_ALL), "")
-        packPdxFiles(groups, mapOf(groupFile to shared))
-        return ecu to groups
+        return fixtures + (comParamFile to comParams)
     }
 
     private fun packPdxFiles(
